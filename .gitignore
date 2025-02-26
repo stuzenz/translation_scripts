@@ -7,3 +7,10 @@ devenv.local.nix
 
 # pre-commit
 .pre-commit-config.yaml
+
+# input and output files
+input_files*
+output_files*
+
+# secrets
+.env
