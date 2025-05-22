@@ -1,0 +1,26 @@
+python-pptx>=0.6.21
+ollama>=0.4.7
+openpyxl>=3.1.2
+python-dateutil>=2.8.2
+tqdm>=4.66.1
+pyyaml>=6.0
+requests
+tqdm
+numpy==1.26.4  # Explicit numpy version for pandas compatibility
+pandas==2.2.2  # Pinned version that works with numpy 1.26.x
+
+# src4
+openpyxl==3.1.2
+# ollama==0.1.6
+# langdetect==1.0.9
+regex==2024.5.15
+google-generativeai==0.3.2
+python-docx==0.8.11
+colorama==0.4.6
+vsdx
+jsonschema
+pytest
+
+#pdf generation
+aspose-words
+# python312Packages.pyicu
