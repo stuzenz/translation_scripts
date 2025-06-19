@@ -210,7 +210,7 @@ if __name__ == "__main__":
     parser.add_argument("input_file", help="Input DOCX file path")
     parser.add_argument("--source-lang", default="auto", help="Source language code for translation")
     parser.add_argument("--target-lang", default=None, help="Target language code for translation") # Made target_lang optional if listing styles
-    parser.add_argument("--model", default="gemini-2.0-flash", help="Gemini model name for translation")
+    parser.add_argument("--model", default="gemini-2.5-flash", help="Gemini model name for translation")
     parser.add_argument("--batch-size", type=int, default=15,
                       help="Elements per batch for translation (15-20 recommended)")
     parser.add_argument("--not-to-translate-styles", default=None,
