@@ -9,11 +9,17 @@
       git
       python312Packages.numpy
       icu
+      ffmpeg
     ];
 
   # https://devenv.sh/languages/
-  languages.python.enable = true;
-  languages.python.venv.enable = true;
+  languages.python = {
+    enable = true;
+    venv = {
+      enable = true;
+      requirements = ./requirements.txt;
+    };
+  };
 
   # https://devenv.sh/processes/
   # processes.cargo-watch.exec = "cargo-watch";

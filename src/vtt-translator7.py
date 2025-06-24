@@ -4,6 +4,8 @@
 # Import necessary libraries
 import argparse
 import re
+# from google import genai
+import google.generativeai as genai
 import os
 import json
 import time
@@ -11,7 +13,7 @@ import logging
 from typing import List, Dict, Optional, Tuple, Any
 import sys
 import asyncio
-
+# from google import genai
 # Configure logging
 # Add filename and line number to debug logging for easier tracing
 log_format = '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
