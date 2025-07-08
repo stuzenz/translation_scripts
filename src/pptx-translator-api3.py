@@ -493,7 +493,7 @@ if __name__ == "__main__":
     parser.add_argument("--source-lang", default="en", help="Source language code (e.g., 'en', 'ja', 'es')")
     parser.add_argument("--target-lang", help="Target language code (e.g., 'en', 'ja', 'es')")
     parser.add_argument("--target-langs", nargs="+", help="Multiple target language codes (e.g., 'en ja es')")
-    parser.add_argument("--gemini-model", default="gemini-1.5-flash", help="Gemini model name (e.g., gemini-1.5-flash, gemini-pro)")
+    parser.add_argument("--gemini-model", default="gemini-2.5-flash", help="Gemini model name (e.g., gemini-1.5-flash, gemini-pro)")
     parser.add_argument("--style-prompt", default="business", choices=list(STYLE_PROMPTS.keys()), 
                          help="Translation style (e.g., 'business', 'casual', 'technical', 'marketing')")
     parser.add_argument("--context-level", choices=["minimal", "slide", "full"], default="slide",
