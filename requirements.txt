@@ -1,27 +1,46 @@
+# Core Python dependencies
 python-pptx>=0.6.21
-ollama>=0.4.7
 openpyxl>=3.1.2
 python-dateutil>=2.8.2
 tqdm>=4.66.1
 pyyaml>=6.0
-requests
-tqdm
+requests>=2.31.0
 numpy==1.26.4  # Explicit numpy version for pandas compatibility
 pandas==2.2.2  # Pinned version that works with numpy 1.26.x
 langdetect>=1.0.9
-# src4
-openpyxl==3.1.2
-# ollama==0.1.6
-# langdetect==1.0.9
-regex==2024.5.15
-google-generativeai==0.8.5
-# google-genai
-python-docx==0.8.11
-colorama==0.4.6
+regex>=2024.5.15
+colorama>=0.4.6
+python-docx>=0.8.11
 vsdx
 jsonschema
 pytest
 
-#pdf generation
+# Google Generative AI SDK - New unified SDK (RECOMMENDED)
+# This is the modern replacement for google-generativeai
+google-genai>=1.7.0
+
+# Legacy Google Generative AI SDK (DEPRECATED - End of Life: August 31, 2025)
+# Keep this for compatibility with existing scripts until migration is complete
+# google-generativeai==0.8.5
+
+# Other AI/ML dependencies
+ollama>=0.4.7
+
+# PDF generation
 aspose-words
-# python312Packages.pyicu
+
+# Note: Choose ONE of the Google AI SDKs:
+# 
+# FOR NEW PROJECTS OR WHEN UPGRADING:
+# Use google-genai>=1.7.0 (recommended)
+# 
+# FOR EXISTING PROJECTS (temporary):
+# Use google-generativeai==0.8.5 (deprecated, works until Aug 2025)
+#
+# MIGRATION PATH:
+# 1. Current scripts use: import google.generativeai as genai
+# 2. New SDK uses: from google import genai
+# 3. API changes: genai.configure() -> genai.Client()
+# 4. Model creation: genai.GenerativeModel() -> client.models.generate_content()
+#
+# See migration guide: https://ai.google.dev/gemini-api/docs/libraries
