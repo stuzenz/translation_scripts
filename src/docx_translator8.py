@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-docx-translator - Microsoft Word Document Translation Utility with Google Genai API v1.27
+docx-translator - Microsoft Word Document Translation Utility with Google Generative AI
 
 A command-line tool for translating Microsoft Word documents while preserving
-formatting, styles, tables, and document structure. Updated for google-genai 1.27.0
-with improved JSON parsing and error handling.
+formatting, styles, tables, and document structure. Enhanced with improved JSON
+parsing and error handling.
 
 Features:
-- Uses the new google-genai SDK (v1.27.0) instead of deprecated google-generativeai
+- Uses google-generativeai SDK with robust error handling
 - Translate single files or entire directories
 - Preserve document formatting, styles, and structure
 - Support for tables with context-aware translation
@@ -43,9 +43,8 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Updated import for google-genai 1.27.0
-from google import genai
-from google.genai import types
+# Use existing google-generativeai package
+import google.generativeai as genai
 from docx import Document
 from docx.text.paragraph import Paragraph
 from docx.table import Table, _Cell
@@ -63,7 +62,7 @@ logging.basicConfig(
 )
 
 # Constants
-DEFAULT_MODEL = 'gemini-2.5-flash'
+DEFAULT_MODEL = 'gemini-flash-latest'
 DEFAULT_BATCH_SIZE = 10
 DEFAULT_CONCURRENCY = 4
 MAX_RETRIES = 3
@@ -185,6 +184,25 @@ class ImprovedJSONExtractor:
         raise ValueError(f"Could not extract valid JSON from response. First 200 chars: {response_text[:200]}")
 
 
+def get_docx_files_from_directory(directory):
+    """Get all DOCX files from a directory"""
+    dir_path = Path(directory)
+    if not dir_path.exists():
+        raise FileNotFoundError(f"Directory '{directory}' does not exist")
+
+    # Get all .docx files, excluding temporary files (starting with ~$)
+    docx_files = [f for f in dir_path.glob("*.docx") if not f.name.startswith("~$")]
+
+    if not docx_files:
+        print(f"{Fore.YELLOW}⚠️ No DOCX files found in '{directory}'{Style.RESET_ALL}")
+    else:
+        print(f"{Fore.CYAN}📁 Found {len(docx_files)} DOCX files in '{directory}'{Style.RESET_ALL}")
+        for file in docx_files:
+            print(f"   📄 {file.name}")
+
+    return docx_files
+
+
 class DocxTranslator:
     """Main translator class for Word documents using google-genai 1.27.0"""
     
@@ -202,43 +220,37 @@ class DocxTranslator:
         self.logger = logging.getLogger(__name__)
         
     def _configure_api(self):
-        """Configure Google Genai API v1.27.0"""
+        """Configure Google Generative AI API"""
         api_key = os.getenv('GOOGLE_API_KEY')
         if not api_key:
             raise ValueError(
                 f"{Fore.RED}Error: GOOGLE_API_KEY environment variable not set.{Style.RESET_ALL}\n"
                 f"{Fore.YELLOW}Please set your Google API key as an environment variable.{Style.RESET_ALL}"
             )
-        
-        # Initialize the new google-genai client
-        self.client = genai.Client(api_key=api_key)
-        self.logger.info(f"Initialized google-genai client v1.27.0 with model: {self.config.model_name}")
-        
+
+        # Configure the API
+        genai.configure(api_key=api_key)
+        self.model = genai.GenerativeModel(self.config.model_name)
+        self.logger.info(f"Initialized google-generativeai with model: {self.config.model_name}")
+
         # Test the API connection
         if not self._test_api_connection():
-            raise ValueError(f"{Fore.RED}Failed to connect to Google Genai API{Style.RESET_ALL}")
+            raise ValueError(f"{Fore.RED}Failed to connect to Google Generative AI API{Style.RESET_ALL}")
     
     def _test_api_connection(self) -> bool:
         """Test API connection with a simple request"""
         try:
             test_prompt = 'Respond with only the JSON: {"status": "ok"}'
-            response = self.client.models.generate_content(
-                model=self.config.model_name,
-                contents=test_prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=50,
-                )
-            )
-            
+            response = self.model.generate_content(test_prompt)
+
             # Check if we got a response
-            if hasattr(response, 'candidates') and response.candidates:
+            if response and response.text:
                 self.logger.info("API connection test successful")
                 return True
             else:
-                self.logger.error("API connection test failed - no candidates in response")
+                self.logger.error("API connection test failed - no response text")
                 return False
-                
+
         except Exception as e:
             self.logger.error(f"API connection test failed: {str(e)}")
             return False
@@ -263,36 +275,25 @@ class DocxTranslator:
         return style_dict.get(self.config.target_lang, style_dict.get('default', ''))
     
     def _build_translation_prompt(self, texts: List[Dict[str, Any]], context: List[str] = None) -> str:
-        """Build optimized prompt for Gemini 2.5 Flash"""
-        style_instruction = self._get_style_prompt()
-        
-        # Simplify the text list for the prompt
-        simple_texts = []
-        for i, text_obj in enumerate(texts):
-            simple_texts.append(f'{{"id": {i}, "text": "{text_obj["text"]}"}}')
-        
-        texts_json = "[" + ",\n".join(simple_texts) + "]"
-        
-        context_section = ""
-        if self.context_data and len(self.context_data) > 0:
-            glossary_items = list(self.context_data.items())[:10]  # Reduce to 10 items
-            context_section = "\nGlossary:\n"
-            for term, translation in glossary_items:
-                context_section += f"{term} = {translation}\n"
-        
-        # Simplified prompt that should work better with the new SDK
-        prompt = f"""Translate from {self.config.source_lang} to {self.config.target_lang}.
-{style_instruction}
-{context_section}
+        """Build simple prompt matching the working version"""
 
-Input texts:
-{texts_json}
+        # Create batch data in the same format as working version
+        batch_data = [{"id": i, "text": text_obj["text"]} for i, text_obj in enumerate(texts)]
 
-Output ONLY a JSON object like this:
-{{"translations": [{{"id": 0, "translation": "..."}}, {{"id": 1, "translation": "..."}}]}}
+        # Simple prompt that matches the working docx_translator6.py exactly
+        prompt = f"""
+        Translate from {self.config.source_lang} to {self.config.target_lang}. Maintain formatting EXACTLY.
+        Return ONLY VALID JSON using this format:
+        {{
+            "translations": [
+                {{"id": <original_id>, "translation": "<translated_text>"}}
+            ]
+        }}
+        DO NOT USE MARKDOWN. Ensure proper JSON escaping.
+        The topic material for translation is a terms of reference document for an interim state architecture.
+        Input: {json.dumps(batch_data, ensure_ascii=False)}
+        """
 
-Start your response with {{ and end with }}. No other text."""
-        
         return prompt
     
     # Removed async method - using sync method only for stability
@@ -306,46 +307,12 @@ Start your response with {{ and end with }}. No other text."""
         
         for attempt in range(MAX_RETRIES):
             try:
-                # Try using the synchronous client as a more stable alternative
-                response = self.client.models.generate_content(
-                    model=self.config.model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        temperature=0.1,  # Even lower temperature
-                        top_p=0.8,
-                        top_k=40,
-                        candidate_count=1,
-                        max_output_tokens=2048,
-                        stop_sequences=["```"],  # Stop if it tries to create code blocks
-                    )
-                )
-                
+                # Use the simple google-generativeai API call (same as working version)
+                response = self.model.generate_content(prompt)
+
                 # Extract text from the response
-                response_text = ""
-                
-                # Try multiple ways to get the text
-                if hasattr(response, 'candidates') and response.candidates:
-                    for candidate in response.candidates:
-                        if hasattr(candidate, 'content') and candidate.content:
-                            if hasattr(candidate.content, 'parts'):
-                                for part in candidate.content.parts:
-                                    if hasattr(part, 'text') and part.text:
-                                        response_text += part.text
-                            elif hasattr(candidate.content, 'text'):
-                                response_text += candidate.content.text
-                
-                # Alternative: try direct text access
-                if not response_text and hasattr(response, 'text'):
-                    response_text = response.text
-                
-                # Last resort: convert to string
-                if not response_text:
-                    response_str = str(response)
-                    # Try to extract text from string representation
-                    text_match = re.search(r"text='([^']*)'", response_str)
-                    if text_match:
-                        response_text = text_match.group(1)
-                
+                response_text = response.text
+
                 if not response_text:
                     self.logger.error(f"Empty response. Full response: {str(response)[:1000]}")
                     raise ValueError("Received empty response from API")
@@ -450,6 +417,58 @@ Start your response with {{ and end with }}. No other text."""
         for para in cell.paragraphs:
             text_index = self._process_paragraph(para, translations, text_index)
         return text_index
+
+    def _mark_toc_for_update(self, doc: Document):
+        """Mark TOC fields to be updated when the document is opened in Word"""
+        try:
+            # Access the document part to modify field update settings
+            doc_part = doc.part
+
+            # Get the document element
+            doc_element = doc_part.element
+
+            # Look for field elements in the document
+            from docx.oxml.ns import qn
+
+            # Find all field elements (fldSimple and fldChar)
+            fields = doc_element.xpath('.//w:fldSimple[@w:instr]',
+                                    namespaces=doc_element.nsmap)
+
+            toc_fields_found = 0
+            for field in fields:
+                instr = field.get(qn('w:instr'))
+                if instr and 'TOC' in instr.upper():
+                    # Mark field as dirty (needs update)
+                    field.set(qn('w:dirty'), 'true')
+                    toc_fields_found += 1
+
+            # Also look for complex fields (fldChar approach)
+            fld_chars = doc_element.xpath('.//w:fldChar[@w:fldCharType="begin"]',
+                                        namespaces=doc_element.nsmap)
+
+            for fld_char in fld_chars:
+                # Check if this is followed by a TOC instruction
+                next_element = fld_char.getnext()
+                while next_element is not None:
+                    if next_element.tag.endswith('}instrText'):
+                        if 'TOC' in next_element.text.upper():
+                            # Mark the field as dirty
+                            fld_char.set(qn('w:dirty'), 'true')
+                            toc_fields_found += 1
+                            break
+                    elif next_element.tag.endswith('}fldChar'):
+                        break
+                    next_element = next_element.getnext()
+
+            if toc_fields_found > 0:
+                self.logger.info(f"📑 Marked {toc_fields_found} TOC field(s) for update")
+                self.logger.info("💡 Word will prompt to update the Table of Contents when document is opened")
+            else:
+                self.logger.debug("No TOC fields found in document")
+
+        except Exception as e:
+            self.logger.warning(f"Could not mark TOC for update: {e}")
+            # This is not critical, so we continue
     
     def translate_document(self, input_path: Path, output_path: Path):
         """Translate a Word document"""
@@ -540,6 +559,9 @@ Start your response with {{ and end with }}. No other text."""
                     for cell in row.cells:
                         text_index = self._process_table_cell(cell, all_translations, text_index)
             
+            # Mark TOC fields for update before saving
+            self._mark_toc_for_update(doc)
+
             # Save translated document
             output_path.parent.mkdir(parents=True, exist_ok=True)
             doc.save(output_path)
@@ -556,30 +578,31 @@ Start your response with {{ and end with }}. No other text."""
 def main():
     """Main entry point"""
     parser = argparse.ArgumentParser(
-        description="Word Document Translation Utility with Google Genai API v1.27.0",
+        description="Word Document Translation Utility with Google Generative AI",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     # Input options
-    parser.add_argument('input_file', help='Input Word document (.docx)')
-    
+    parser.add_argument("input_file", nargs='?', help="Single input DOCX file path")
+    parser.add_argument("--input-files", help="Directory containing DOCX files to process")
+
     # Language options
-    parser.add_argument('--source-lang', default='auto', 
+    parser.add_argument('--source-lang', default='auto',
                        help='Source language code (default: auto-detect)')
-    
-    lang_group = parser.add_mutually_exclusive_group(required=True)
-    lang_group.add_argument('--target-lang', help='Target language code (e.g., ja)')
-    lang_group.add_argument('--target-langs', help='Multiple target languages (comma-separated)')
-    
+
+    parser.add_argument('--target-lang', help='Target language code (e.g., ja)')
+    parser.add_argument('--target-langs', help='Multiple target languages (comma-separated)')
+
     # Translation options
-    parser.add_argument('--style-prompt', choices=list(STYLE_PROMPTS.keys()), 
+    parser.add_argument('--style-prompt', choices=list(STYLE_PROMPTS.keys()),
                        default='business', help='Translation style')
     parser.add_argument('--context-file', help='Path to glossary/context JSON file')
     parser.add_argument('--smart-context', action='store_true',
                        help='Use document structure for better context')
-    
+
     # Output options
     parser.add_argument('--output-dir', default='.', help='Output directory')
+    parser.add_argument("--output-files", help="Directory to save translated files (same as --output-dir)")
     parser.add_argument('--model', default=DEFAULT_MODEL, help='Gemini model name')
     parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
                        help=f'Texts per API call (default: {DEFAULT_BATCH_SIZE})')
@@ -595,7 +618,7 @@ def main():
     
     # Handle version request
     if args.version:
-        print(f"{Fore.CYAN}DOCX Translator using google-genai v1.27.0{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}DOCX Translator using google-generativeai{Style.RESET_ALL}")
         print(f"Model: {DEFAULT_MODEL}")
         sys.exit(0)
     
@@ -612,78 +635,122 @@ def main():
                     print(f"    Default: {prompt[:60]}...")
         sys.exit(0)
     
-    # Parse target languages
+    # Validate input arguments
+    if not args.input_file and not args.input_files:
+        parser.error("Either provide a single input file or use --input-files for directory processing")
+
+    if args.input_file and args.input_files:
+        parser.error("Cannot use both single input file and --input-files together")
+
+    # Handle input files
+    input_files = []
+    if args.input_file:
+        input_path = Path(args.input_file)
+        if not input_path.exists():
+            print(f"{Fore.RED}❌ Input file '{args.input_file}' does not exist{Style.RESET_ALL}")
+            sys.exit(1)
+        if not input_path.suffix.lower() == '.docx':
+            print(f"{Fore.RED}Error: Input file must be a .docx file{Style.RESET_ALL}")
+            sys.exit(1)
+        input_files = [args.input_file]
+    elif args.input_files:
+        try:
+            input_files = get_docx_files_from_directory(args.input_files)
+            if not input_files:
+                sys.exit(1)
+        except FileNotFoundError as e:
+            print(f"{Fore.RED}❌ {str(e)}{Style.RESET_ALL}")
+            sys.exit(1)
+
+    # Handle target languages
     target_langs = []
     if args.target_langs:
         target_langs = [lang.strip() for lang in args.target_langs.split(',')]
-    else:
+    elif args.target_lang:
         target_langs = [args.target_lang]
-    
-    # Validate input file
-    input_path = Path(args.input_file)
-    if not input_path.exists():
-        print(f"{Fore.RED}Error: Input file not found: {input_path}{Style.RESET_ALL}")
-        sys.exit(1)
-    
-    if not input_path.suffix.lower() == '.docx':
-        print(f"{Fore.RED}Error: Input file must be a .docx file{Style.RESET_ALL}")
-        sys.exit(1)
-    
+    else:
+        parser.error("At least one target language must be specified using --target-lang or --target-langs")
+
+    # Handle output directory
+    output_dir = Path(args.output_files) if args.output_files else Path(args.output_dir)
+
     # Show header
     print(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
-    print(f"{Fore.GREEN}DOCX Translator - Google Genai v1.27.0{Style.RESET_ALL}")
+    print(f"{Fore.GREEN}DOCX Translator - Google Generative AI{Style.RESET_ALL}")
     print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
     print(f"Model: {args.model}")
     print(f"Source: {args.source_lang}")
     print(f"Targets: {', '.join(target_langs)}")
     print(f"Style: {args.style_prompt}")
+    print(f"Files: {len(input_files)}")
     print(f"{Fore.CYAN}{'='*60}{Style.RESET_ALL}\n")
+
+    # Process all files
+    all_output_files = []
+    total_files = len(input_files)
     
-    # Process each target language
-    output_dir = Path(args.output_dir)
-    
-    for target_lang in target_langs:
-        print(f"\n{Fore.CYAN}Translating to {target_lang}...{Style.RESET_ALL}")
-        
-        # Create configuration
-        config = TranslationConfig(
-            source_lang=args.source_lang,
-            target_lang=target_lang,
-            model_name=args.model,
-            batch_size=args.batch_size,
-            concurrency=args.concurrency,
-            style_prompt=args.style_prompt,
-            context_file=args.context_file,
-            smart_context=args.smart_context,
-            debug=args.debug
-        )
-        
-        # Create translator
-        try:
-            translator = DocxTranslator(config)
-        except ValueError as e:
-            print(str(e))
-            sys.exit(1)
-        
-        # Generate output filename
-        output_name = f"{input_path.stem}_{target_lang}{input_path.suffix}"
-        output_path = output_dir / output_name
-        
-        # Translate document
-        try:
-            start_time = time.time()
-            translator.translate_document(input_path, output_path)
-            elapsed_time = time.time() - start_time
-            print(f"{Fore.GREEN}✅ Successfully created: {output_path}{Style.RESET_ALL}")
-            print(f"{Fore.CYAN}   Time taken: {elapsed_time:.2f} seconds{Style.RESET_ALL}")
-        except Exception as e:
-            print(f"{Fore.RED}❌ Translation failed: {e}{Style.RESET_ALL}")
-            if args.debug:
-                import traceback
-                traceback.print_exc()
-            continue
-    
-    print(f"\n{Fore.GREEN}✅ All translations completed!{Style.RESET_ALL}")
+    for i, input_file in enumerate(input_files, 1):
+        print(f"\n{Fore.BLUE}📊 Processing file {i}/{total_files}: {Path(input_file).name}{Style.RESET_ALL}")
+        input_path = Path(input_file)
+
+        for target_lang in target_langs:
+            print(f"\n{Fore.CYAN}Translating to {target_lang}...{Style.RESET_ALL}")
+
+            # Create configuration
+            config = TranslationConfig(
+                source_lang=args.source_lang,
+                target_lang=target_lang,
+                model_name=args.model,
+                batch_size=args.batch_size,
+                concurrency=args.concurrency,
+                style_prompt=args.style_prompt,
+                context_file=args.context_file,
+                smart_context=args.smart_context,
+                debug=args.debug
+            )
+
+            # Create translator
+            try:
+                translator = DocxTranslator(config)
+            except ValueError as e:
+                print(str(e))
+                sys.exit(1)
+
+            # Generate output filename
+            output_name = f"{input_path.stem}_{target_lang}{input_path.suffix}"
+            output_path = output_dir / output_name
+
+            # Translate document
+            try:
+                start_time = time.time()
+                translator.translate_document(input_path, output_path)
+                elapsed_time = time.time() - start_time
+                print(f"{Fore.GREEN}✅ Successfully created: {output_path}{Style.RESET_ALL}")
+                print(f"{Fore.CYAN}   Time taken: {elapsed_time:.2f} seconds{Style.RESET_ALL}")
+                all_output_files.append(output_path)
+            except Exception as e:
+                print(f"{Fore.RED}❌ Translation failed: {e}{Style.RESET_ALL}")
+                if args.debug:
+                    import traceback
+                    traceback.print_exc()
+                continue
+
+    # Summary
+    print(f"\n{Fore.GREEN}🎉 Translation completed!{Style.RESET_ALL}")
+    print(f"{Fore.CYAN}📊 Summary:{Style.RESET_ALL}")
+    print(f"   📄 Input files processed: {total_files}")
+    print(f"   🌍 Target languages: {len(target_langs)} ({', '.join(target_langs)})")
+    print(f"   📁 Output files created: {len(all_output_files)}")
+
+    if all_output_files:
+        print(f"\n{Fore.CYAN}📁 Output files:{Style.RESET_ALL}")
+        for output_file in all_output_files:
+            print(f"   ✅ {output_file}")
+
+        print(f"\n{Fore.YELLOW}📑 Table of Contents Note:{Style.RESET_ALL}")
+        print(f"   If your documents contain Table of Contents, Word will prompt")
+        print(f"   to update them when you open the translated files. Click 'Yes'")
+        print(f"   to refresh the TOC with translated headings.")
 
 
 if __name__ == "__main__":
