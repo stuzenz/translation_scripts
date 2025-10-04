@@ -1,48 +1,36 @@
-# Core Python dependencies
-python-pptx>=0.6.21
-openpyxl>=3.1.2
-python-dateutil>=2.8.2
-tqdm>=4.66.1
-pyyaml>=6.0
-requests>=2.31.0
-numpy==1.26.4  # Explicit numpy version for pandas compatibility
-pandas==2.2.2  # Pinned version that works with numpy 1.26.x
-langdetect>=1.0.9
-regex>=2024.5.15
-colorama>=0.4.6
-python-docx>=0.8.11
-vsdx
-jsonschema
-pytest
-
-langdetect
-# Google Generative AI SDK - New unified SDK (RECOMMENDED)
-# This is the modern replacement for google-generativeai
-# google-genai>=1.7.0
-# google-genai>=1.27.0
-
-# Legacy Google Generative AI SDK (DEPRECATED - End of Life: August 31, 2025)
-# Keep this for compatibility with existing scripts until migration is complete
+annotated-types==0.7.0
+cachetools==6.2.0
+certifi==2025.8.3
+charset-normalizer==3.4.3
+colorama==0.4.6
+docopt==0.6.2
+google-ai-generativelanguage==0.6.15
+google-api-core==2.25.2
+google-api-python-client==2.184.0
+google-auth==2.41.1
+google-auth-httplib2==0.2.0
 google-generativeai==0.8.5
-
-# Other AI/ML dependencies
-ollama>=0.4.7
-
-# PDF generation
-aspose-words
-
-# Note: Choose ONE of the Google AI SDKs:
-# 
-# FOR NEW PROJECTS OR WHEN UPGRADING:
-# Use google-genai>=1.7.0 (recommended)
-# 
-# FOR EXISTING PROJECTS (temporary):
-# Use google-generativeai==0.8.5 (deprecated, works until Aug 2025)
-#
-# MIGRATION PATH:
-# 1. Current scripts use: import google.generativeai as genai
-# 2. New SDK uses: from google import genai
-# 3. API changes: genai.configure() -> genai.Client()
-# 4. Model creation: genai.GenerativeModel() -> client.models.generate_content()
-#
-# See migration guide: https://ai.google.dev/gemini-api/docs/libraries
+googleapis-common-protos==1.70.0
+grpcio==1.75.1
+grpcio-status==1.71.2
+httplib2==0.31.0
+idna==3.10
+lxml==6.0.2
+numpy==2.3.2
+pipreqs==0.4.13
+proto-plus==1.26.1
+protobuf==5.29.5
+pyasn1==0.6.1
+pyasn1_modules==0.4.2
+pydantic==2.11.10
+pydantic_core==2.33.2
+pyparsing==3.2.5
+python-docx==1.2.0
+requests==2.32.5
+rsa==4.9.1
+tqdm==4.67.1
+typing-inspection==0.4.2
+typing_extensions==4.15.0
+uritemplate==4.2.0
+urllib3==2.5.0
+yarg==0.1.10
