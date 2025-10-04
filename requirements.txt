@@ -15,9 +15,11 @@ vsdx
 jsonschema
 pytest
 
+langdetect
 # Google Generative AI SDK - New unified SDK (RECOMMENDED)
 # This is the modern replacement for google-generativeai
-google-genai>=1.7.0
+# google-genai>=1.7.0
+google-genai>=1.27.0
 
 # Legacy Google Generative AI SDK (DEPRECATED - End of Life: August 31, 2025)
 # Keep this for compatibility with existing scripts until migration is complete
