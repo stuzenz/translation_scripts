@@ -94,6 +94,18 @@ STYLE_PROMPTS = {
 
 
 @dataclass
+class FontProtectedSegment:
+    """Represents a font-protected text segment that should not be translated"""
+    placeholder: str
+    original_text: str
+    font_name: str
+    run_properties: Dict[str, Any]
+    context_type: str
+    paragraph_index: int
+    run_index: int
+
+
+@dataclass
 class TranslationConfig:
     """Configuration for translation job"""
     source_lang: str
@@ -105,6 +117,122 @@ class TranslationConfig:
     context_file: Optional[str]
     smart_context: bool
     debug: bool
+    dont_translate_fonts: Optional[List[str]]
+
+
+class FontProtectionEngine:
+    """Engine for detecting and managing font-protected text segments"""
+
+    # Context detection keywords
+    UI_KEYWORDS = ['button', 'menu', 'dialog', 'field', 'tab', 'click', 'select', 'press', 'choose']
+    CODE_KEYWORDS = ['function', 'variable', 'command', 'method', 'property', 'run', 'execute', 'call', 'script']
+    VALUE_KEYWORDS = ['enter', 'input', 'type', 'password', 'username', 'value', 'set', 'specify']
+
+    def __init__(self, protected_fonts: List[str]):
+        # Normalize font names to lowercase for comparison
+        self.protected_fonts = [font.strip().lower() for font in protected_fonts] if protected_fonts else []
+        self.segment_counter = 0
+        self.protected_segments: Dict[str, FontProtectedSegment] = {}
+
+    def is_protected_font(self, run) -> bool:
+        """Check if a run uses a protected font"""
+        if not self.protected_fonts:
+            return False
+
+        try:
+            # Get font name from run properties
+            if hasattr(run, 'font') and run.font.name:
+                run_font = run.font.name.lower()
+                # Check for exact match or partial match (e.g., "Courier" matches "Courier New")
+                for protected_font in self.protected_fonts:
+                    if protected_font in run_font or run_font in protected_font:
+                        return True
+        except:
+            pass
+        return False
+
+    def analyze_context(self, text_before: str, text_after: str, protected_text: str) -> str:
+        """Analyze surrounding context to determine placeholder type"""
+        combined_text = f"{text_before} {protected_text} {text_after}".lower()
+
+        # Check for UI context
+        for keyword in self.UI_KEYWORDS:
+            if keyword in combined_text:
+                return 'ui'
+
+        # Check for code context
+        for keyword in self.CODE_KEYWORDS:
+            if keyword in combined_text:
+                return 'code'
+
+        # Check for value context
+        for keyword in self.VALUE_KEYWORDS:
+            if keyword in combined_text:
+                return 'value'
+
+        # Default to generic
+        return 'generic'
+
+    def generate_placeholder(self, context_type: str) -> str:
+        """Generate a unique placeholder based on context type"""
+        self.segment_counter += 1
+
+        type_map = {
+            'ui': 'UI',
+            'code': 'CODE',
+            'value': 'VALUE',
+            'generic': 'TERM'
+        }
+
+        type_prefix = type_map.get(context_type, 'TERM')
+        return f"__FONTPROT_{type_prefix}_{self.segment_counter}__"
+
+    def extract_run_properties(self, run) -> Dict[str, Any]:
+        """Extract formatting properties from a run"""
+        props = {}
+        try:
+            if hasattr(run, 'font'):
+                font = run.font
+                props['font_name'] = font.name
+                props['font_size'] = font.size
+                props['bold'] = font.bold
+                props['italic'] = font.italic
+                props['underline'] = font.underline
+                props['color'] = font.color.rgb if font.color and font.color.rgb else None
+        except:
+            pass
+        return props
+
+    def get_paragraph_context(self, paragraphs: List, para_index: int, run_index: int) -> Tuple[str, str]:
+        """Get text before and after the current run for context analysis"""
+        if para_index >= len(paragraphs):
+            return "", ""
+
+        paragraph = paragraphs[para_index]
+        text_before = ""
+        text_after = ""
+
+        try:
+            # Get text from runs before current run
+            for i, run in enumerate(paragraph.runs):
+                if i < run_index:
+                    text_before += run.text
+                elif i > run_index:
+                    text_after += run.text
+
+            # Get text from previous paragraph (last 50 chars)
+            if para_index > 0:
+                prev_text = paragraphs[para_index - 1].text
+                text_before = prev_text[-50:] + " " + text_before
+
+            # Get text from next paragraph (first 50 chars)
+            if para_index < len(paragraphs) - 1:
+                next_text = paragraphs[para_index + 1].text
+                text_after = text_after + " " + next_text[:50]
+        except:
+            pass
+
+        return text_before.strip(), text_after.strip()
 
 
 class ImprovedJSONExtractor:
@@ -209,6 +337,7 @@ class DocxTranslator:
     def __init__(self, config: TranslationConfig):
         self.config = config
         self.json_extractor = ImprovedJSONExtractor()
+        self.font_protection = FontProtectionEngine(config.dont_translate_fonts) if config.dont_translate_fonts else None
         self._setup_logging()
         self._configure_api()
         self.context_data = self._load_context()
@@ -280,6 +409,14 @@ class DocxTranslator:
         # Create batch data in the same format as working version
         batch_data = [{"id": i, "text": text_obj["text"]} for i, text_obj in enumerate(texts)]
 
+        # Build placeholder preservation instruction
+        placeholder_instruction = ""
+        if self.font_protection and any("__FONTPROT_" in item["text"] for item in batch_data):
+            placeholder_instruction = """
+        CRITICAL: Preserve ALL text in format __FONTPROT_*__ exactly as written.
+        These are placeholders that must NOT be translated or modified. Keep them exactly as they appear.
+        """
+
         # Simple prompt that matches the working docx_translator6.py exactly
         prompt = f"""
         Translate from {self.config.source_lang} to {self.config.target_lang}. Maintain formatting EXACTLY.
@@ -289,7 +426,7 @@ class DocxTranslator:
                 {{"id": <original_id>, "translation": "<translated_text>"}}
             ]
         }}
-        DO NOT USE MARKDOWN. Ensure proper JSON escaping.
+        DO NOT USE MARKDOWN. Ensure proper JSON escaping.{placeholder_instruction}
         The topic material for translation is a terms of reference document for an interim state architecture.
         Input: {json.dumps(batch_data, ensure_ascii=False)}
         """
@@ -469,6 +606,115 @@ class DocxTranslator:
         except Exception as e:
             self.logger.warning(f"Could not mark TOC for update: {e}")
             # This is not critical, so we continue
+
+    def _process_font_protection(self, doc: Document) -> Dict[str, FontProtectedSegment]:
+        """Pre-process document to replace font-protected text with placeholders"""
+        if not self.font_protection:
+            return {}
+
+        protected_segments = {}
+        paragraphs = doc.paragraphs
+
+        self.logger.info(f"🔒 Scanning for protected fonts: {', '.join(self.font_protection.protected_fonts)}")
+
+        for para_index, paragraph in enumerate(paragraphs):
+            for run_index, run in enumerate(paragraph.runs):
+                if run.text.strip() and self.font_protection.is_protected_font(run):
+                    # Get context for placeholder type determination
+                    text_before, text_after = self.font_protection.get_paragraph_context(
+                        paragraphs, para_index, run_index
+                    )
+
+                    # Analyze context and generate placeholder
+                    context_type = self.font_protection.analyze_context(
+                        text_before, text_after, run.text
+                    )
+                    placeholder = self.font_protection.generate_placeholder(context_type)
+
+                    # Extract run properties for restoration
+                    run_properties = self.font_protection.extract_run_properties(run)
+
+                    # Create protected segment
+                    segment = FontProtectedSegment(
+                        placeholder=placeholder,
+                        original_text=run.text,
+                        font_name=run.font.name if run.font.name else "Unknown",
+                        run_properties=run_properties,
+                        context_type=context_type,
+                        paragraph_index=para_index,
+                        run_index=run_index
+                    )
+
+                    protected_segments[placeholder] = segment
+
+                    # Replace text with placeholder
+                    run.text = placeholder
+
+                    self.logger.debug(f"🔒 Protected '{segment.original_text}' → '{placeholder}' (type: {context_type})")
+
+        if protected_segments:
+            self.logger.info(f"🔒 Protected {len(protected_segments)} font-based text segments")
+
+        return protected_segments
+
+    def _restore_font_protection(self, doc: Document, protected_segments: Dict[str, FontProtectedSegment]):
+        """Post-process document to restore font-protected text from placeholders"""
+        if not protected_segments:
+            return
+
+        self.logger.info(f"🔓 Restoring {len(protected_segments)} protected text segments")
+
+        # Scan through all paragraphs to find and replace placeholders
+        for paragraph in doc.paragraphs:
+            for run in paragraph.runs:
+                if run.text and any(placeholder in run.text for placeholder in protected_segments.keys()):
+                    # Replace each placeholder in this run
+                    original_text = run.text
+                    for placeholder, segment in protected_segments.items():
+                        if placeholder in run.text:
+                            # Replace placeholder with original text
+                            run.text = run.text.replace(placeholder, segment.original_text)
+
+                            # Restore font properties
+                            try:
+                                if run.font and segment.run_properties:
+                                    if 'font_name' in segment.run_properties:
+                                        run.font.name = segment.run_properties['font_name']
+                                    if 'font_size' in segment.run_properties and segment.run_properties['font_size']:
+                                        run.font.size = segment.run_properties['font_size']
+                                    if 'bold' in segment.run_properties and segment.run_properties['bold'] is not None:
+                                        run.font.bold = segment.run_properties['bold']
+                                    if 'italic' in segment.run_properties and segment.run_properties['italic'] is not None:
+                                        run.font.italic = segment.run_properties['italic']
+                                    if 'underline' in segment.run_properties and segment.run_properties['underline'] is not None:
+                                        run.font.underline = segment.run_properties['underline']
+                                    if 'color' in segment.run_properties and segment.run_properties['color']:
+                                        run.font.color.rgb = segment.run_properties['color']
+                            except Exception as e:
+                                self.logger.warning(f"Could not restore font properties for '{segment.original_text}': {e}")
+
+                            self.logger.debug(f"🔓 Restored '{placeholder}' → '{segment.original_text}'")
+
+        # Also check tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for paragraph in cell.paragraphs:
+                        for run in paragraph.runs:
+                            if run.text and any(placeholder in run.text for placeholder in protected_segments.keys()):
+                                for placeholder, segment in protected_segments.items():
+                                    if placeholder in run.text:
+                                        run.text = run.text.replace(placeholder, segment.original_text)
+                                        # Restore font properties (same as above)
+                                        try:
+                                            if run.font and segment.run_properties:
+                                                if 'font_name' in segment.run_properties:
+                                                    run.font.name = segment.run_properties['font_name']
+                                                # ... (same property restoration logic)
+                                        except Exception as e:
+                                            self.logger.warning(f"Could not restore font properties in table for '{segment.original_text}': {e}")
+
+        self.logger.info("🔓 Font protection restoration completed")
     
     def translate_document(self, input_path: Path, output_path: Path):
         """Translate a Word document"""
@@ -477,7 +723,10 @@ class DocxTranslator:
         try:
             # Load document
             doc = Document(input_path)
-            
+
+            # Pre-process: Replace font-protected text with placeholders
+            protected_segments = self._process_font_protection(doc)
+
             # Extract document context if smart context is enabled
             doc_context = []
             if self.config.smart_context:
@@ -558,7 +807,10 @@ class DocxTranslator:
                 for row in table.rows:
                     for cell in row.cells:
                         text_index = self._process_table_cell(cell, all_translations, text_index)
-            
+
+            # Post-process: Restore font-protected text from placeholders
+            self._restore_font_protection(doc, protected_segments)
+
             # Mark TOC fields for update before saving
             self._mark_toc_for_update(doc)
 
@@ -599,6 +851,8 @@ def main():
     parser.add_argument('--context-file', help='Path to glossary/context JSON file')
     parser.add_argument('--smart-context', action='store_true',
                        help='Use document structure for better context')
+    parser.add_argument('--dont-translate-font', nargs='?', const='Courier New',
+                       help='Font names to exclude from translation (default: Courier New). Use comma-separated list for multiple fonts.')
 
     # Output options
     parser.add_argument('--output-dir', default='.', help='Output directory')
@@ -674,6 +928,14 @@ def main():
     # Handle output directory
     output_dir = Path(args.output_files) if args.output_files else Path(args.output_dir)
 
+    # Handle font protection
+    dont_translate_fonts = None
+    if args.dont_translate_font:
+        if ',' in args.dont_translate_font:
+            dont_translate_fonts = [font.strip() for font in args.dont_translate_font.split(',')]
+        else:
+            dont_translate_fonts = [args.dont_translate_font.strip()]
+
     # Show header
     print(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
     print(f"{Fore.GREEN}DOCX Translator - Google Generative AI{Style.RESET_ALL}")
@@ -706,7 +968,8 @@ def main():
                 style_prompt=args.style_prompt,
                 context_file=args.context_file,
                 smart_context=args.smart_context,
-                debug=args.debug
+                debug=args.debug,
+                dont_translate_fonts=dont_translate_fonts
             )
 
             # Create translator
