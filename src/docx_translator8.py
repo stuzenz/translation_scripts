@@ -94,15 +94,22 @@ STYLE_PROMPTS = {
 
 
 @dataclass
-class FontProtectedSegment:
-    """Represents a font-protected text segment that should not be translated"""
+class ProtectedSegment:
+    """Represents a text segment that should not be translated (unified for font/type protection)"""
     placeholder: str
     original_text: str
-    font_name: str
-    run_properties: Dict[str, Any]
     context_type: str
     paragraph_index: int
     run_index: int
+    run_properties: Dict[str, Any]
+    # Protection type specific fields
+    font_name: Optional[str] = None  # For font protection
+    formatting_types: Optional[Dict[str, bool]] = None  # For type protection
+    protection_reason: str = "unknown"  # 'font', 'type', etc.
+
+
+# Keep for backward compatibility during refactor
+FontProtectedSegment = ProtectedSegment
 
 
 @dataclass
@@ -129,38 +136,21 @@ class TranslationConfig:
     smart_context: bool
     debug: bool
     dont_translate_fonts: Optional[List[str]]
+    dont_translate_types: Optional[List[str]]
 
 
-class FontProtectionEngine:
-    """Engine for detecting and managing font-protected text segments"""
+class TextProtectionEngine:
+    """Base class for text protection engines (font, type, etc.)"""
 
-    # Context detection keywords
+    # Context detection keywords (shared across all protection types)
     UI_KEYWORDS = ['button', 'menu', 'dialog', 'field', 'tab', 'click', 'select', 'press', 'choose']
     CODE_KEYWORDS = ['function', 'variable', 'command', 'method', 'property', 'run', 'execute', 'call', 'script']
     VALUE_KEYWORDS = ['enter', 'input', 'type', 'password', 'username', 'value', 'set', 'specify']
 
-    def __init__(self, protected_fonts: List[str]):
-        # Normalize font names to lowercase for comparison
-        self.protected_fonts = [font.strip().lower() for font in protected_fonts] if protected_fonts else []
+    def __init__(self, protection_prefix: str):
+        self.protection_prefix = protection_prefix  # e.g., "FONTPROT", "TYPEPROT"
         self.segment_counter = 0
-        self.protected_segments: Dict[str, FontProtectedSegment] = {}
-
-    def is_protected_font(self, run) -> bool:
-        """Check if a run uses a protected font"""
-        if not self.protected_fonts:
-            return False
-
-        try:
-            # Get font name from run properties
-            if hasattr(run, 'font') and run.font.name:
-                run_font = run.font.name.lower()
-                # Check for exact match or partial match (e.g., "Courier" matches "Courier New")
-                for protected_font in self.protected_fonts:
-                    if protected_font in run_font or run_font in protected_font:
-                        return True
-        except:
-            pass
-        return False
+        self.protected_segments: Dict[str, ProtectedSegment] = {}
 
     def analyze_context(self, text_before: str, text_after: str, protected_text: str) -> str:
         """Analyze surrounding context to determine placeholder type"""
@@ -196,7 +186,7 @@ class FontProtectionEngine:
         }
 
         type_prefix = type_map.get(context_type, 'TERM')
-        return f"__FONTPROT_{type_prefix}_{self.segment_counter}__"
+        return f"__{self.protection_prefix}_{type_prefix}_{self.segment_counter}__"
 
     def extract_run_properties(self, run) -> Dict[str, Any]:
         """Extract formatting properties from a run"""
@@ -244,6 +234,119 @@ class FontProtectionEngine:
             pass
 
         return text_before.strip(), text_after.strip()
+
+    def should_protect_run(self, run) -> bool:
+        """Override in subclasses to define protection criteria"""
+        raise NotImplementedError("Subclasses must implement should_protect_run")
+
+
+class FontProtectionEngine(TextProtectionEngine):
+    """Engine for detecting and managing font-protected text segments"""
+
+    def __init__(self, protected_fonts: List[str]):
+        super().__init__("FONTPROT")
+        # Normalize font names to lowercase for comparison
+        self.protected_fonts = [font.strip().lower() for font in protected_fonts] if protected_fonts else []
+
+    def should_protect_run(self, run) -> bool:
+        """Check if a run uses a protected font"""
+        if not self.protected_fonts:
+            return False
+
+        try:
+            # Get font name from run properties
+            if hasattr(run, 'font') and run.font.name:
+                run_font = run.font.name.lower()
+                # Check for exact match or partial match (e.g., "Courier" matches "Courier New")
+                for protected_font in self.protected_fonts:
+                    if protected_font in run_font or run_font in protected_font:
+                        return True
+        except:
+            pass
+        return False
+
+    # Keep for backward compatibility
+    def is_protected_font(self, run) -> bool:
+        """Deprecated: use should_protect_run instead"""
+        return self.should_protect_run(run)
+
+
+class TypeProtectionEngine(TextProtectionEngine):
+    """Engine for detecting and managing formatting-type-protected text segments"""
+
+    # Mapping of type names to formatting properties
+    TYPE_MAPPINGS = {
+        "bold": {"bold": True},
+        "italic": {"italic": True},
+        "underlined": {"underline": True},
+        "italic-bold": {"italic": True, "bold": True},
+        "underlined-bold": {"underline": True, "bold": True},
+        "underlined-italic": {"underline": True, "italic": True},
+        "underlined-italic-bold": {"underline": True, "italic": True, "bold": True}
+    }
+
+    def __init__(self, protected_types: List[str]):
+        super().__init__("TYPEPROT")
+        # Normalize type names and convert to formatting requirements
+        self.protected_formatting = []
+
+        if protected_types:
+            for type_name in protected_types:
+                type_name = type_name.strip().lower()
+                if type_name in self.TYPE_MAPPINGS:
+                    self.protected_formatting.append(self.TYPE_MAPPINGS[type_name])
+                else:
+                    # Log warning about invalid type but don't fail
+                    pass
+
+    def should_protect_run(self, run) -> bool:
+        """Check if a run matches any of the protected formatting types"""
+        if not self.protected_formatting:
+            return False
+
+        try:
+            # Extract current run's formatting properties
+            if hasattr(run, 'font'):
+                font = run.font
+                run_formatting = {
+                    "bold": bool(font.bold),
+                    "italic": bool(font.italic),
+                    "underline": bool(font.underline)
+                }
+
+                # Check if current formatting matches any protected type
+                for protected_format in self.protected_formatting:
+                    match = True
+                    for property_name, required_value in protected_format.items():
+                        if run_formatting.get(property_name, False) != required_value:
+                            match = False
+                            break
+
+                    if match:
+                        return True
+        except:
+            pass
+        return False
+
+    @classmethod
+    def get_valid_types(cls) -> List[str]:
+        """Return list of valid formatting type names"""
+        return list(cls.TYPE_MAPPINGS.keys())
+
+    @classmethod
+    def validate_types(cls, type_list: List[str]) -> Tuple[List[str], List[str]]:
+        """Validate type list and return (valid_types, invalid_types)"""
+        valid = []
+        invalid = []
+
+        for type_name in type_list:
+            type_name = type_name.strip().lower()
+            if type_name in cls.TYPE_MAPPINGS:
+                valid.append(type_name)
+            else:
+                invalid.append(type_name)
+
+        return valid, invalid
 
 
 class GlossaryProtectionEngine:
@@ -436,6 +539,7 @@ class DocxTranslator:
         self.config = config
         self.json_extractor = ImprovedJSONExtractor()
         self.font_protection = FontProtectionEngine(config.dont_translate_fonts) if config.dont_translate_fonts else None
+        self.type_protection = TypeProtectionEngine(config.dont_translate_types) if config.dont_translate_types else None
         self._setup_logging()
         self._configure_api()
         self.context_data = self._load_context()
@@ -508,11 +612,20 @@ class DocxTranslator:
         # Create batch data in the same format as working version
         batch_data = [{"id": i, "text": text_obj["text"]} for i, text_obj in enumerate(texts)]
 
-        # Build font placeholder preservation instruction
-        font_instruction = ""
-        if self.font_protection and any("__FONTPROT_" in item["text"] for item in batch_data):
-            font_instruction = """
-        CRITICAL: Preserve ALL text in format __FONTPROT_*__ exactly as written.
+        # Build protection placeholder preservation instruction
+        protection_instruction = ""
+        has_font_placeholders = any("__FONTPROT_" in item["text"] for item in batch_data)
+        has_type_placeholders = any("__TYPEPROT_" in item["text"] for item in batch_data)
+
+        if has_font_placeholders or has_type_placeholders:
+            placeholders = []
+            if has_font_placeholders:
+                placeholders.append("__FONTPROT_*__")
+            if has_type_placeholders:
+                placeholders.append("__TYPEPROT_*__")
+
+            protection_instruction = f"""
+        CRITICAL: Preserve ALL text in format {', '.join(placeholders)} exactly as written.
         These are placeholders that must NOT be translated or modified. Keep them exactly as they appear.
         """
 
@@ -522,7 +635,7 @@ class DocxTranslator:
             glossary_instruction = self.glossary_protection.build_glossary_instruction()
 
         # Combine all instructions
-        special_instructions = font_instruction + glossary_instruction
+        special_instructions = protection_instruction + glossary_instruction
 
         # Enhanced prompt with glossary support
         prompt = f"""
@@ -714,58 +827,93 @@ class DocxTranslator:
             self.logger.warning(f"Could not mark TOC for update: {e}")
             # This is not critical, so we continue
 
-    def _process_font_protection(self, doc: Document) -> Dict[str, FontProtectedSegment]:
-        """Pre-process document to replace font-protected text with placeholders"""
-        if not self.font_protection:
+    def _process_text_protection(self, doc: Document) -> Dict[str, ProtectedSegment]:
+        """Pre-process document to replace font and type-protected text with placeholders"""
+        if not self.font_protection and not self.type_protection:
             return {}
 
         protected_segments = {}
         paragraphs = doc.paragraphs
 
-        self.logger.info(f"🔒 Scanning for protected fonts: {', '.join(self.font_protection.protected_fonts)}")
+        # Log what protection is enabled
+        if self.font_protection:
+            self.logger.info(f"🔒 Font protection enabled: {', '.join(self.font_protection.protected_fonts)}")
+        if self.type_protection:
+            valid_types = [name for name, props in TypeProtectionEngine.TYPE_MAPPINGS.items()
+                          if props in self.type_protection.protected_formatting]
+            self.logger.info(f"🎨 Type protection enabled: {', '.join(valid_types)}")
 
         for para_index, paragraph in enumerate(paragraphs):
             for run_index, run in enumerate(paragraph.runs):
-                if run.text.strip() and self.font_protection.is_protected_font(run):
+                if not run.text.strip():
+                    continue
+
+                # Check if run should be protected (font or type)
+                should_protect = False
+                protection_reason = ""
+
+                if self.font_protection and self.font_protection.should_protect_run(run):
+                    should_protect = True
+                    protection_reason = "font"
+                elif self.type_protection and self.type_protection.should_protect_run(run):
+                    should_protect = True
+                    protection_reason = "type"
+
+                if should_protect:
+                    # Choose the appropriate engine for context analysis
+                    engine = self.font_protection if protection_reason == "font" else self.type_protection
+
                     # Get context for placeholder type determination
-                    text_before, text_after = self.font_protection.get_paragraph_context(
+                    text_before, text_after = engine.get_paragraph_context(
                         paragraphs, para_index, run_index
                     )
 
                     # Analyze context and generate placeholder
-                    context_type = self.font_protection.analyze_context(
+                    context_type = engine.analyze_context(
                         text_before, text_after, run.text
                     )
-                    placeholder = self.font_protection.generate_placeholder(context_type)
+                    placeholder = engine.generate_placeholder(context_type)
 
                     # Extract run properties for restoration
-                    run_properties = self.font_protection.extract_run_properties(run)
+                    run_properties = engine.extract_run_properties(run)
 
-                    # Create protected segment
-                    segment = FontProtectedSegment(
-                        placeholder=placeholder,
-                        original_text=run.text,
-                        font_name=run.font.name if run.font.name else "Unknown",
-                        run_properties=run_properties,
-                        context_type=context_type,
-                        paragraph_index=para_index,
-                        run_index=run_index
-                    )
+                    # Create protected segment with appropriate fields
+                    segment_data = {
+                        "placeholder": placeholder,
+                        "original_text": run.text,
+                        "context_type": context_type,
+                        "paragraph_index": para_index,
+                        "run_index": run_index,
+                        "run_properties": run_properties,
+                        "protection_reason": protection_reason
+                    }
 
+                    if protection_reason == "font":
+                        segment_data["font_name"] = run.font.name if run.font.name else "Unknown"
+                    elif protection_reason == "type":
+                        # Store the specific formatting that triggered protection
+                        formatting = {
+                            "bold": bool(run.font.bold),
+                            "italic": bool(run.font.italic),
+                            "underline": bool(run.font.underline)
+                        }
+                        segment_data["formatting_types"] = formatting
+
+                    segment = ProtectedSegment(**segment_data)
                     protected_segments[placeholder] = segment
 
                     # Replace text with placeholder
                     run.text = placeholder
 
-                    self.logger.debug(f"🔒 Protected '{segment.original_text}' → '{placeholder}' (type: {context_type})")
+                    self.logger.debug(f"🔒 Protected '{segment.original_text}' → '{placeholder}' ({protection_reason}: {context_type})")
 
         if protected_segments:
-            self.logger.info(f"🔒 Protected {len(protected_segments)} font-based text segments")
+            self.logger.info(f"🔒 Protected {len(protected_segments)} text segments ({sum(1 for s in protected_segments.values() if s.protection_reason == 'font')} font, {sum(1 for s in protected_segments.values() if s.protection_reason == 'type')} type)")
 
         return protected_segments
 
-    def _restore_font_protection(self, doc: Document, protected_segments: Dict[str, FontProtectedSegment]):
-        """Post-process document to restore font-protected text from placeholders"""
+    def _restore_text_protection(self, doc: Document, protected_segments: Dict[str, ProtectedSegment]):
+        """Post-process document to restore font and type-protected text from placeholders"""
         if not protected_segments:
             return
 
@@ -831,8 +979,8 @@ class DocxTranslator:
             # Load document
             doc = Document(input_path)
 
-            # Pre-process: Replace font-protected text with placeholders
-            protected_segments = self._process_font_protection(doc)
+            # Pre-process: Replace font and type-protected text with placeholders
+            protected_segments = self._process_text_protection(doc)
 
             # Log glossary status
             if self.glossary_protection:
@@ -950,8 +1098,8 @@ class DocxTranslator:
                     for cell in row.cells:
                         text_index = self._process_table_cell(cell, all_translations, text_index)
 
-            # Post-process: Restore font-protected text from placeholders
-            self._restore_font_protection(doc, protected_segments)
+            # Post-process: Restore font and type-protected text from placeholders
+            self._restore_text_protection(doc, protected_segments)
 
             # Mark TOC fields for update before saving
             self._mark_toc_for_update(doc)
@@ -995,6 +1143,8 @@ def main():
                        help='Use document structure for better context')
     parser.add_argument('--dont-translate-font', nargs='?', const='Courier New',
                        help='Font names to exclude from translation (default: Courier New). Use comma-separated list for multiple fonts.')
+    parser.add_argument('--dont-translate-type', nargs='?', const='',
+                       help='Formatting types to exclude from translation. Valid types: bold, italic, underlined, italic-bold, underlined-bold, underlined-italic, underlined-italic-bold. Use comma-separated list for multiple types.')
 
     # Output options
     parser.add_argument('--output-dir', default='.', help='Output directory')
@@ -1008,6 +1158,7 @@ def main():
     # Other options
     parser.add_argument('--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('--list-styles', action='store_true', help='List available styles')
+    parser.add_argument('--list-types', action='store_true', help='List valid formatting types for --dont-translate-type')
     parser.add_argument('--version', action='store_true', help='Show version information')
     
     args = parser.parse_args()
@@ -1019,6 +1170,21 @@ def main():
         sys.exit(0)
     
     # Handle info requests
+    if args.list_types:
+        print(f"\n{Fore.CYAN}Valid formatting types for --dont-translate-type:{Style.RESET_ALL}")
+        for type_name in TypeProtectionEngine.get_valid_types():
+            formatting = TypeProtectionEngine.TYPE_MAPPINGS[type_name]
+            properties = []
+            for prop, value in formatting.items():
+                if value:
+                    properties.append(prop)
+            print(f"  {Fore.GREEN}{type_name}:{Style.RESET_ALL} {', '.join(properties)}")
+        print(f"\n{Fore.CYAN}Usage examples:{Style.RESET_ALL}")
+        print(f"  --dont-translate-type bold")
+        print(f"  --dont-translate-type bold,italic")
+        print(f"  --dont-translate-type underlined-italic-bold")
+        sys.exit(0)
+
     if args.list_styles:
         print(f"\n{Fore.CYAN}Available translation styles:{Style.RESET_ALL}")
         for style, prompts in STYLE_PROMPTS.items():
@@ -1078,6 +1244,27 @@ def main():
         else:
             dont_translate_fonts = [args.dont_translate_font.strip()]
 
+    # Handle type protection
+    dont_translate_types = None
+    if args.dont_translate_type:
+        if ',' in args.dont_translate_type:
+            type_list = [t.strip().lower() for t in args.dont_translate_type.split(',')]
+        else:
+            type_list = [args.dont_translate_type.strip().lower()]
+
+        # Validate types
+        valid_types, invalid_types = TypeProtectionEngine.validate_types(type_list)
+
+        if invalid_types:
+            print(f"{Fore.YELLOW}⚠️ Invalid formatting types ignored: {', '.join(invalid_types)}{Style.RESET_ALL}")
+            print(f"{Fore.CYAN}ℹ️ Valid types: {', '.join(TypeProtectionEngine.get_valid_types())}{Style.RESET_ALL}")
+
+        if valid_types:
+            dont_translate_types = valid_types
+            print(f"{Fore.GREEN}✅ Type protection enabled for: {', '.join(valid_types)}{Style.RESET_ALL}")
+        else:
+            print(f"{Fore.YELLOW}⚠️ No valid formatting types specified{Style.RESET_ALL}")
+
     # Show header
     print(f"\n{Fore.CYAN}{'='*60}{Style.RESET_ALL}")
     print(f"{Fore.GREEN}DOCX Translator - Google Generative AI{Style.RESET_ALL}")
@@ -1111,7 +1298,8 @@ def main():
                 context_file=args.context_file,
                 smart_context=args.smart_context,
                 debug=args.debug,
-                dont_translate_fonts=dont_translate_fonts
+                dont_translate_fonts=dont_translate_fonts,
+                dont_translate_types=dont_translate_types
             )
 
             # Create translator
