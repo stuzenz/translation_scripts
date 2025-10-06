@@ -106,6 +106,17 @@ class FontProtectedSegment:
 
 
 @dataclass
+class GlossaryProtectedSegment:
+    """Represents a glossary-protected text segment that should use specific translation"""
+    placeholder: str
+    original_text: str
+    target_translation: str
+    start_pos: int
+    end_pos: int
+    is_case_sensitive: bool
+
+
+@dataclass
 class TranslationConfig:
     """Configuration for translation job"""
     source_lang: str
@@ -235,6 +246,93 @@ class FontProtectionEngine:
         return text_before.strip(), text_after.strip()
 
 
+class GlossaryProtectionEngine:
+    """Engine for detecting and managing glossary-protected text segments"""
+
+    def __init__(self, glossary_data: Dict[str, str]):
+        self.glossary_data = glossary_data or {}
+        self.segment_counter = 0
+        self.protected_segments: Dict[str, GlossaryProtectedSegment] = {}
+
+        # Sort glossary terms by length (longest first) to handle overlapping terms properly
+        self.sorted_terms = sorted(self.glossary_data.keys(), key=len, reverse=True)
+
+    def generate_placeholder(self) -> str:
+        """Generate a unique placeholder for glossary terms"""
+        self.segment_counter += 1
+        return f"__GLOSSARY_TERM_{self.segment_counter}__"
+
+    def protect_text(self, text: str) -> Tuple[str, Dict[str, GlossaryProtectedSegment]]:
+        """Replace glossary terms with placeholders and return mapping"""
+        if not self.glossary_data:
+            return text, {}
+
+        protected_text = text
+        segments = {}
+
+        # Process terms in order of length (longest first) to avoid partial matches
+        for term in self.sorted_terms:
+            target_translation = self.glossary_data[term]
+
+            # Find all occurrences of this term (case-insensitive)
+            import re
+            pattern = re.compile(re.escape(term), re.IGNORECASE)
+
+            matches = list(pattern.finditer(protected_text))
+
+            # Process matches in reverse order to maintain positions
+            for match in reversed(matches):
+                placeholder = self.generate_placeholder()
+
+                segment = GlossaryProtectedSegment(
+                    placeholder=placeholder,
+                    original_text=match.group(),
+                    target_translation=target_translation,
+                    start_pos=match.start(),
+                    end_pos=match.end(),
+                    is_case_sensitive=False
+                )
+
+                segments[placeholder] = segment
+
+                # Replace the matched text with placeholder
+                protected_text = (
+                    protected_text[:match.start()] +
+                    placeholder +
+                    protected_text[match.end():]
+                )
+
+        return protected_text, segments
+
+    def restore_text(self, text: str, segments: Dict[str, GlossaryProtectedSegment]) -> str:
+        """Restore placeholders with target translations"""
+        restored_text = text
+
+        for placeholder, segment in segments.items():
+            # Replace placeholder with target translation
+            restored_text = restored_text.replace(placeholder, segment.target_translation)
+
+        return restored_text
+
+    def build_glossary_instruction(self) -> str:
+        """Build instruction text for the LLM about glossary terms"""
+        if not self.glossary_data:
+            return ""
+
+        glossary_table = []
+        for source, target in self.glossary_data.items():
+            glossary_table.append(f'"{source}" → "{target}"')
+
+        instruction = f"""
+        MANDATORY GLOSSARY TERMS - These must be translated exactly as specified:
+        {chr(10).join(glossary_table)}
+
+        CRITICAL: Any placeholders in format __GLOSSARY_TERM_*__ must be preserved exactly.
+        """
+
+        return instruction
+
+
 class ImprovedJSONExtractor:
     """Enhanced JSON extraction with multiple fallback strategies"""
     
@@ -341,6 +439,7 @@ class DocxTranslator:
         self._setup_logging()
         self._configure_api()
         self.context_data = self._load_context()
+        self.glossary_protection = GlossaryProtectionEngine(self.context_data) if self.context_data else None
         
     def _setup_logging(self):
         """Configure logging based on debug flag"""
@@ -404,20 +503,28 @@ class DocxTranslator:
         return style_dict.get(self.config.target_lang, style_dict.get('default', ''))
     
     def _build_translation_prompt(self, texts: List[Dict[str, Any]], context: List[str] = None) -> str:
-        """Build simple prompt matching the working version"""
+        """Build translation prompt with glossary and font protection support"""
 
         # Create batch data in the same format as working version
         batch_data = [{"id": i, "text": text_obj["text"]} for i, text_obj in enumerate(texts)]
 
-        # Build placeholder preservation instruction
-        placeholder_instruction = ""
+        # Build font placeholder preservation instruction
+        font_instruction = ""
         if self.font_protection and any("__FONTPROT_" in item["text"] for item in batch_data):
-            placeholder_instruction = """
+            font_instruction = """
         CRITICAL: Preserve ALL text in format __FONTPROT_*__ exactly as written.
         These are placeholders that must NOT be translated or modified. Keep them exactly as they appear.
         """
 
-        # Simple prompt that matches the working docx_translator6.py exactly
+        # Build glossary instruction
+        glossary_instruction = ""
+        if self.glossary_protection:
+            glossary_instruction = self.glossary_protection.build_glossary_instruction()
+
+        # Combine all instructions
+        special_instructions = font_instruction + glossary_instruction
+
+        # Enhanced prompt with glossary support
         prompt = f"""
         Translate from {self.config.source_lang} to {self.config.target_lang}. Maintain formatting EXACTLY.
         Return ONLY VALID JSON using this format:
@@ -426,7 +533,7 @@ class DocxTranslator:
                 {{"id": <original_id>, "translation": "<translated_text>"}}
             ]
         }}
-        DO NOT USE MARKDOWN. Ensure proper JSON escaping.{placeholder_instruction}
+        DO NOT USE MARKDOWN. Ensure proper JSON escaping.{special_instructions}
         The topic material for translation is a terms of reference document for an interim state architecture.
         Input: {json.dumps(batch_data, ensure_ascii=False)}
         """
@@ -727,6 +834,12 @@ class DocxTranslator:
             # Pre-process: Replace font-protected text with placeholders
             protected_segments = self._process_font_protection(doc)
 
+            # Log glossary status
+            if self.glossary_protection:
+                self.logger.info(f"Glossary enabled with {len(self.context_data)} terms")
+            else:
+                self.logger.info("No glossary loaded")
+
             # Extract document context if smart context is enabled
             doc_context = []
             if self.config.smart_context:
@@ -771,28 +884,57 @@ class DocxTranslator:
             
             # Translate in batches with progress bar
             all_translations = {}
-            
+            all_glossary_segments = {}  # Track glossary segments per batch
+
             with tqdm(total=len(texts_to_translate), desc="Translating") as pbar:
                 for i in range(0, len(texts_to_translate), self.config.batch_size):
                     batch = texts_to_translate[i:i + self.config.batch_size]
-                    
-                    # Prepare batch for API (only id and text)
-                    batch_for_api = [{'id': j, 'text': item['text']} 
-                                     for j, item in enumerate(batch)]
-                    
+
+                    # Apply glossary protection to batch texts
+                    batch_for_api = []
+                    batch_glossary_segments = {}
+
+                    for j, item in enumerate(batch):
+                        text = item['text']
+
+                        # Apply glossary protection if enabled
+                        if self.glossary_protection:
+                            protected_text, segments = self.glossary_protection.protect_text(text)
+                            if segments:
+                                batch_glossary_segments[j] = segments
+                                text = protected_text
+                                self.logger.debug(f"Protected {len(segments)} glossary terms in: {item['text'][:50]}...")
+
+                        batch_for_api.append({'id': j, 'text': text})
+
+                    # Store glossary segments for this batch
+                    if batch_glossary_segments:
+                        all_glossary_segments[i] = batch_glossary_segments
+
                     # Add batch context info
                     batch_context = doc_context.copy()
                     if batch:
                         batch_context.append(f"[Batch Info] Translating {batch[0]['type']} elements")
-                    
+
                     # Translate batch
                     batch_translations = self.translate_batch(batch_for_api, batch_context)
-                    
+
+                    # Restore glossary terms in translations
+                    if i in all_glossary_segments:
+                        for j, translation in batch_translations.items():
+                            if j in all_glossary_segments[i]:
+                                # Restore glossary terms with target translations
+                                segments = all_glossary_segments[i][j]
+                                original_translation = translation
+                                translation = self.glossary_protection.restore_text(translation, segments)
+                                batch_translations[j] = translation
+                                self.logger.debug(f"Restored {len(segments)} glossary terms: {original_translation[:50]}... → {translation[:50]}...")
+
                     # Map back to original indices
                     for j, translation in batch_translations.items():
                         original_idx = i + j
                         all_translations[original_idx] = translation
-                    
+
                     pbar.update(len(batch))
             
             # Apply translations back to document
