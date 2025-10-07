@@ -1147,8 +1147,7 @@ def main():
                        help='Formatting types to exclude from translation. Valid types: bold, italic, underlined, italic-bold, underlined-bold, underlined-italic, underlined-italic-bold. Use comma-separated list for multiple types.')
 
     # Output options
-    parser.add_argument('--output-dir', default='.', help='Output directory')
-    parser.add_argument("--output-files", help="Directory to save translated files (same as --output-dir)")
+    parser.add_argument('--output-dir', default='.', help='Output directory for translated files')
     parser.add_argument('--model', default=DEFAULT_MODEL, help='Gemini model name')
     parser.add_argument('--batch-size', type=int, default=DEFAULT_BATCH_SIZE,
                        help=f'Texts per API call (default: {DEFAULT_BATCH_SIZE})')
@@ -1211,6 +1210,10 @@ def main():
         if not input_path.exists():
             print(f"{Fore.RED}❌ Input file '{args.input_file}' does not exist{Style.RESET_ALL}")
             sys.exit(1)
+        if input_path.is_dir():
+            print(f"{Fore.RED}Error: '{args.input_file}' is a directory{Style.RESET_ALL}")
+            print(f"{Fore.YELLOW}💡 For directory processing, use: --input-files {args.input_file}{Style.RESET_ALL}")
+            sys.exit(1)
         if not input_path.suffix.lower() == '.docx':
             print(f"{Fore.RED}Error: Input file must be a .docx file{Style.RESET_ALL}")
             sys.exit(1)
@@ -1234,7 +1237,7 @@ def main():
         parser.error("At least one target language must be specified using --target-lang or --target-langs")
 
     # Handle output directory
-    output_dir = Path(args.output_files) if args.output_files else Path(args.output_dir)
+    output_dir = Path(args.output_dir)
 
     # Handle font protection
     dont_translate_fonts = None
@@ -1278,65 +1281,90 @@ def main():
 
     # Process all files
     all_output_files = []
+    failed_files = []
     total_files = len(input_files)
-    
+
     for i, input_file in enumerate(input_files, 1):
         print(f"\n{Fore.BLUE}📊 Processing file {i}/{total_files}: {Path(input_file).name}{Style.RESET_ALL}")
         input_path = Path(input_file)
+        file_success = False
 
-        for target_lang in target_langs:
-            print(f"\n{Fore.CYAN}Translating to {target_lang}...{Style.RESET_ALL}")
+        try:
+            for target_lang in target_langs:
+                print(f"\n{Fore.CYAN}Translating to {target_lang}...{Style.RESET_ALL}")
 
-            # Create configuration
-            config = TranslationConfig(
-                source_lang=args.source_lang,
-                target_lang=target_lang,
-                model_name=args.model,
-                batch_size=args.batch_size,
-                concurrency=args.concurrency,
-                style_prompt=args.style_prompt,
-                context_file=args.context_file,
-                smart_context=args.smart_context,
-                debug=args.debug,
-                dont_translate_fonts=dont_translate_fonts,
-                dont_translate_types=dont_translate_types
-            )
+                # Create configuration for this translation
+                config = TranslationConfig(
+                    source_lang=args.source_lang,
+                    target_lang=target_lang,
+                    model_name=args.model,
+                    batch_size=args.batch_size,
+                    concurrency=args.concurrency,
+                    style_prompt=args.style_prompt,
+                    context_file=args.context_file,
+                    smart_context=args.smart_context,
+                    debug=args.debug,
+                    dont_translate_fonts=dont_translate_fonts,
+                    dont_translate_types=dont_translate_types
+                )
 
-            # Create translator
-            try:
-                translator = DocxTranslator(config)
-            except ValueError as e:
-                print(str(e))
-                sys.exit(1)
+                # Create translator (moved inside try block)
+                try:
+                    translator = DocxTranslator(config)
+                except ValueError as e:
+                    print(f"{Fore.RED}❌ Configuration error for {target_lang}: {e}{Style.RESET_ALL}")
+                    continue  # Skip this language, try next one
 
-            # Generate output filename
-            output_name = f"{input_path.stem}_{target_lang}{input_path.suffix}"
-            output_path = output_dir / output_name
+                # Generate output filename
+                output_name = f"{input_path.stem}_{target_lang}{input_path.suffix}"
+                output_path = output_dir / output_name
 
-            # Translate document
-            try:
-                start_time = time.time()
-                translator.translate_document(input_path, output_path)
-                elapsed_time = time.time() - start_time
-                print(f"{Fore.GREEN}✅ Successfully created: {output_path}{Style.RESET_ALL}")
-                print(f"{Fore.CYAN}   Time taken: {elapsed_time:.2f} seconds{Style.RESET_ALL}")
-                all_output_files.append(output_path)
-            except Exception as e:
-                print(f"{Fore.RED}❌ Translation failed: {e}{Style.RESET_ALL}")
-                if args.debug:
-                    import traceback
-                    traceback.print_exc()
-                continue
+                # Translate document
+                try:
+                    start_time = time.time()
+                    translator.translate_document(input_path, output_path)
+                    elapsed_time = time.time() - start_time
+                    print(f"{Fore.GREEN}✅ Successfully created: {output_path}{Style.RESET_ALL}")
+                    print(f"{Fore.CYAN}   Time taken: {elapsed_time:.2f} seconds{Style.RESET_ALL}")
+                    all_output_files.append(output_path)
+                    file_success = True
+                except Exception as e:
+                    print(f"{Fore.RED}❌ Translation failed for {target_lang}: {e}{Style.RESET_ALL}")
+                    if args.debug:
+                        import traceback
+                        traceback.print_exc()
+                    continue  # Try next language
+
+        except Exception as e:
+            print(f"{Fore.RED}❌ Critical error processing file {input_file}: {e}{Style.RESET_ALL}")
+            if args.debug:
+                import traceback
+                traceback.print_exc()
+            failed_files.append(input_file)
+            continue  # Move to next file
+
+        if not file_success:
+            failed_files.append(input_file)
+            print(f"{Fore.YELLOW}⚠️ No successful translations for {input_path.name}{Style.RESET_ALL}")
 
     # Summary
+    successful_files = total_files - len(failed_files)
     print(f"\n{Fore.GREEN}🎉 Translation completed!{Style.RESET_ALL}")
     print(f"{Fore.CYAN}📊 Summary:{Style.RESET_ALL}")
-    print(f"   📄 Input files processed: {total_files}")
+    print(f"   📄 Input files found: {total_files}")
+    print(f"   ✅ Successfully processed: {successful_files}")
+    if failed_files:
+        print(f"   ❌ Failed files: {len(failed_files)}")
     print(f"   🌍 Target languages: {len(target_langs)} ({', '.join(target_langs)})")
     print(f"   📁 Output files created: {len(all_output_files)}")
 
+    if failed_files:
+        print(f"\n{Fore.RED}❌ Failed files:{Style.RESET_ALL}")
+        for failed_file in failed_files:
+            print(f"   ⚠️ {Path(failed_file).name}")
+
     if all_output_files:
-        print(f"\n{Fore.CYAN}📁 Output files:{Style.RESET_ALL}")
+        print(f"\n{Fore.CYAN}📁 Successfully created files:{Style.RESET_ALL}")
         for output_file in all_output_files:
             print(f"   ✅ {output_file}")
 
